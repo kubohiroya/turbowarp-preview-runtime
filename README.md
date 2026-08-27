@@ -14,6 +14,10 @@ It does not parse app DSLs, own diagnostics, read files, or render app-specific 
 - Simple reload anchor resolution.
 - App-neutral error classes and validation helpers.
 
+## Boundary
+
+The package owns protocol mechanics only. Consumers remain responsible for file watching, source compilation, diagnostics rendering, app-specific reload policy, and any TurboWarp runtime mutations.
+
 ## Example
 
 ```ts

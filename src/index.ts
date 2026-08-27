@@ -34,6 +34,14 @@ export interface PreviewProtocolSessionOptions {
   protocolVersion?: PreviewProtocolVersion;
 }
 
+export interface PreviewProtocolSession {
+  handshake(input: unknown): Promise<Readonly<Record<string, unknown>>>;
+  stage(input: unknown): Promise<Readonly<Record<string, unknown>>>;
+  defer(input: unknown): Promise<Readonly<Record<string, unknown>>>;
+  commit(input: unknown): Promise<Readonly<Record<string, unknown>>>;
+  disconnect(input: unknown): Promise<Readonly<Record<string, unknown>>>;
+}
+
 export interface ReloadAnchorAvailability {
   available: boolean;
   reason: string | null;
@@ -143,7 +151,7 @@ function currentSummary(state: PreviewLiveReloadState): Readonly<Record<string, 
   });
 }
 
-export function createPreviewProtocolSession(options: PreviewProtocolSessionOptions) {
+export function createPreviewProtocolSession(options: PreviewProtocolSessionOptions): PreviewProtocolSession {
   if (!isRecord(options)) throw new TypeError('Preview protocol options must be an object.');
   const liveReload = options.liveReloadSession;
   if (
