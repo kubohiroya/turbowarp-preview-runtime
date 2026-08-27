@@ -1,0 +1,61 @@
+{
+  "name": "@kubohiroya/turbowarp-preview-runtime",
+  "version": "0.1.0",
+  "description": "App-neutral preview protocol and reload primitives for TurboWarp apps.",
+  "author": "Hiroya Kubo <hiroya@cuc.ac.jp>",
+  "license": "MPL-2.0",
+  "type": "module",
+  "sideEffects": false,
+  "homepage": "https://github.com/kubohiroya/turbowarp-preview-runtime#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/kubohiroya/turbowarp-preview-runtime.git"
+  },
+  "bugs": {
+    "url": "https://github.com/kubohiroya/turbowarp-preview-runtime/issues"
+  },
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    },
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "dist/",
+    "src/",
+    "README.md",
+    "README.ja.md",
+    "CHANGELOG.md",
+    "LICENSE"
+  ],
+  "publishConfig": {
+    "access": "public",
+    "registry": "https://registry.npmjs.org/"
+  },
+  "packageManager": "pnpm@11.11.0",
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "build": "tsc --project tsconfig.build.json",
+    "pack:check": "pnpm pack --dry-run",
+    "release:check": "npm publish --dry-run --access public",
+    "check": "pnpm run typecheck && pnpm run test && pnpm run build && pnpm run pack:check"
+  },
+  "devDependencies": {
+    "typescript": "^5.9.3",
+    "vitest": "^4.1.10"
+  },
+  "keywords": [
+    "turbowarp",
+    "scratch",
+    "preview",
+    "live-reload",
+    "runtime"
+  ]
+}
