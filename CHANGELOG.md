@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.2.0
 
 - Add app-neutral preview protocol controller, operation queue, validation helpers, and negotiation primitives.
 - Keep the source lifecycle session adapter as a compatibility wrapper over the new controller.
