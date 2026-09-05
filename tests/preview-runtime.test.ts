@@ -6,11 +6,22 @@ import {
   negotiatePreviewCapabilities,
   negotiatePreviewProtocolVersion,
   normalizePreviewCapabilities,
+  normalizePreviewErrorCodePrefix,
+  previewProtocolErrorCode,
   readPreviewProtocolMessage,
   resolveReloadAnchor,
   validatePreviewRevision,
   validatePreviewSessionId
 } from '../src/index.js';
+
+function hello(sessionId: string, capabilities: readonly string[] = ['transport.v1']) {
+  return {
+    type: 'preview.handshake',
+    protocolVersion: {major: 1, minor: 0},
+    sessionId,
+    capabilities: [...capabilities]
+  };
+}
 
 function liveReloadSession() {
   const state = {generation: 1, current: {sourceId: 'current', integrity: 'sha256:abc'}};
@@ -278,6 +289,176 @@ describe('createPreviewProtocolSession', () => {
       sessionId: 'dev'
     });
     expect(liveReload.discarded).toBe(1);
+  });
+});
+
+describe('app diagnostic prefixes', () => {
+  it('builds and validates app-specific protocol error codes', () => {
+    expect(previewProtocolErrorCode('SCHEMA')).toBe('TWRP-PROTOCOL-SCHEMA');
+    expect(previewProtocolErrorCode('CANDIDATE', 'K4')).toBe('K4-PROTOCOL-CANDIDATE');
+    expect(normalizePreviewErrorCodePrefix('K4')).toBe('K4');
+    expect(() => normalizePreviewErrorCodePrefix('k4')).toThrow(/upper-case/u);
+    expect(() => normalizePreviewErrorCodePrefix('')).toThrow(/upper-case/u);
+  });
+
+  it('reports every controller rejection under the app prefix', async () => {
+    const controller = createPreviewProtocolController({
+      errorCodePrefix: 'K4',
+      requiredCapabilities: ['transport.v1']
+    });
+
+    await expect(controller.handshake(hello('dev', []))).rejects.toMatchObject({
+      code: 'K4-PROTOCOL-CAPABILITY'
+    });
+    await expect(controller.handshake({...hello('dev'), protocolVersion: {major: 9, minor: 0}})).rejects.toMatchObject(
+      {code: 'K4-PROTOCOL-VERSION'}
+    );
+    expect(() => controller.requireConnection('dev')).toThrow(
+      expect.objectContaining({code: 'K4-PROTOCOL-DISCONNECTED'})
+    );
+
+    await controller.handshake(hello('dev'));
+    expect(() => controller.requireCandidate('dev', 1, 1)).toThrow(
+      expect.objectContaining({code: 'K4-PROTOCOL-CANDIDATE'})
+    );
+    expect(() => controller.requireCapability('dev', 'source.defer.v1')).toThrow(
+      expect.objectContaining({code: 'K4-PROTOCOL-CAPABILITY'})
+    );
+  });
+});
+
+describe('candidate identity', () => {
+  it('binds a candidate to one revision and rejects stale or missing candidates', async () => {
+    const controller = createPreviewProtocolController({requiredCapabilities: ['transport.v1']});
+    await controller.handshake(hello('dev'));
+
+    controller.acceptRevision('dev', 1);
+    expect(controller.currentConnection()?.candidate).toBeNull();
+    expect(controller.acceptCandidate('dev', {id: 7, revision: 1}).candidate).toEqual({id: 7, revision: 1});
+    expect(controller.requireCandidate('dev', 1, 7)).toEqual({id: 7, revision: 1});
+
+    expect(() => controller.requireCandidate('dev', 1, 8)).toThrow(
+      expect.objectContaining({code: 'TWRP-PROTOCOL-CANDIDATE'})
+    );
+    expect(() => controller.requireCandidate('dev', 2, 7)).toThrow(
+      expect.objectContaining({code: 'TWRP-PROTOCOL-CANDIDATE'})
+    );
+
+    // A newer revision supersedes whatever the previous revision staged.
+    controller.acceptRevision('dev', 2);
+    expect(controller.currentConnection()?.candidate).toBeNull();
+    expect(() => controller.requireCandidate('dev', 1, 7)).toThrow(
+      expect.objectContaining({code: 'TWRP-PROTOCOL-CANDIDATE'})
+    );
+
+    controller.acceptCandidate('dev', {id: 8, revision: 2});
+    expect(controller.clearCandidate('dev').candidate).toBeNull();
+    expect(() => controller.acceptCandidate('dev', {id: 0, revision: 2})).toThrow(
+      expect.objectContaining({code: 'TWRP-PROTOCOL-SCHEMA'})
+    );
+  });
+});
+
+describe('two-phase operations', () => {
+  it('detects a replaced connection and a replaced revision across an await', async () => {
+    const controller = createPreviewProtocolController({requiredCapabilities: ['transport.v1']});
+    await controller.handshake(hello('dev'));
+    const first = controller.acceptRevision('dev', 1);
+
+    // A second revision arrives while the first one is still quiescing.
+    controller.acceptRevision('dev', 2);
+    expect(controller.requireConnection('dev', first.connectionId).latestRevision).toBe(2);
+
+    await controller.handshake(hello('dev'));
+    expect(() => controller.requireConnection('dev', first.connectionId)).toThrow(
+      expect.objectContaining({code: 'TWRP-PROTOCOL-SESSION'})
+    );
+    expect(controller.requireConnection('dev').connectionId).not.toBe(first.connectionId);
+  });
+
+  it('waits for tracked out-of-queue work in whenIdle', async () => {
+    const controller = createPreviewProtocolController();
+    const events: string[] = [];
+    let release: (() => void) | undefined;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+
+    controller.track(gate.then(() => events.push('tracked')));
+    const idle = controller.whenIdle().then(() => events.push('idle'));
+
+    expect(events).toEqual([]);
+    release?.();
+    await idle;
+    expect(events).toEqual(['tracked', 'idle']);
+  });
+});
+
+describe('disconnect semantics', () => {
+  it('is idempotent for the owning session and still rejects a stale one', async () => {
+    const liveReload = liveReloadSession();
+    const session = createPreviewProtocolSession({
+      liveReloadSession: liveReload,
+      requiredCapabilities: ['source.stage.v1']
+    });
+    await session.handshake({...hello('dev', ['source.stage.v1'])});
+
+    await expect(session.disconnect({type: 'preview.disconnect', sessionId: 'other'})).rejects.toMatchObject({
+      code: 'TWRP-PROTOCOL-SESSION'
+    });
+
+    await expect(session.disconnect({type: 'preview.disconnect', sessionId: 'dev'})).resolves.toEqual({
+      type: 'preview.disconnect.ack',
+      sessionId: 'dev'
+    });
+    expect(liveReload.discarded).toBe(1);
+
+    // Disconnecting again is a no-op rather than an error, so cleanup does not have to know
+    // whether a connection is still open.
+    await expect(session.disconnect({type: 'preview.disconnect', sessionId: 'dev'})).resolves.toEqual({
+      type: 'preview.disconnect.ack',
+      sessionId: 'dev'
+    });
+    expect(liveReload.discarded).toBe(1);
+  });
+});
+
+describe('session capability gating and state', () => {
+  it('gates defer on a negotiated capability and reports quiescent state', async () => {
+    const liveReload = liveReloadSession();
+    const session = createPreviewProtocolSession({
+      liveReloadSession: liveReload,
+      requiredCapabilities: ['source.stage.v1'],
+      optionalCapabilities: ['source.defer.v1'],
+      deferCapability: 'source.defer.v1'
+    });
+
+    expect(session.getState()).toMatchObject({connected: false, sessionId: null, latestRevision: 0});
+
+    await session.handshake({...hello('dev', ['source.stage.v1'])});
+    await expect(session.defer({type: 'preview.source.defer', sessionId: 'dev'})).rejects.toMatchObject({
+      code: 'TWRP-PROTOCOL-CAPABILITY'
+    });
+    expect(liveReload.deferred).toBe(0);
+
+    await session.handshake({...hello('dev', ['source.stage.v1', 'source.defer.v1'])});
+    await expect(session.defer({type: 'preview.source.defer', sessionId: 'dev'})).resolves.toMatchObject({
+      type: 'preview.source.defer.ack'
+    });
+    expect(liveReload.deferred).toBe(1);
+
+    await session.stage({
+      type: 'preview.source.stage',
+      sessionId: 'dev',
+      revision: 4,
+      result: {ok: true}
+    });
+    await expect(session.whenIdle()).resolves.toMatchObject({
+      connected: true,
+      sessionId: 'dev',
+      latestRevision: 4,
+      current: {generation: 1}
+    });
   });
 });
 
